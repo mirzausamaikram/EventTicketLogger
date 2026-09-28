@@ -43,14 +43,18 @@ The app will run on `http://127.0.0.1:8000`.
 
 Open the dashboard in your browser:
 
-`http://127.0.0.1:8000/dashboard`
+`http://127.0.0.1:8000/`
 
 It includes:
 
-- login panel
-- open/resolved/escalated summary cards
-- recent ticket table
-- support analytics overview
+- Login page first; after signing in, the dashboard opens.
+- Raise tickets with a title, description, category, priority, and optional owner.
+- Move tickets through `open`, `in-progress`, and `resolved` using the status selector and **Save** button.
+- Open, in-progress, resolved, and high-priority ticket counts.
+- Recent ticket table and support analytics.
+- **Logout** returns to the login page.
+
+Use the demo credentials above to try the workflow. Sample tickets are seeded automatically when the ticket collection is empty.
 
 ## API overview
 
@@ -65,6 +69,7 @@ It includes:
 - `GET /health`
 - `GET /incidents`
 - `POST /incidents`
+- `PATCH /incidents/{incident_id}` with `{ "status": "in-progress" }` or `{ "status": "resolved" }`
 - `GET /tickets`
 - `POST /tickets`
 - `GET /tickets/{ticket_id}`
@@ -77,8 +82,9 @@ It includes:
 
 - `GET /reports/summary`
   - Requires `Authorization: Bearer <token>`
-  - Returns total, open, resolved, and escalated ticket counts
+  - Returns total, open, in-progress, resolved, and escalated ticket counts
   - Includes status, priority, and category aggregation data
+- `GET /incidents`, `POST /incidents`, and `PATCH /incidents/{incident_id}` require `Authorization: Bearer <token>`.
 - `GET /reports/export?format=json`
 - `GET /reports/export?format=csv`
 

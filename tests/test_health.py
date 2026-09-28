@@ -89,4 +89,54 @@ def test_login_and_reporting(monkeypatch):
     payload = summary_response.json()
     assert payload["total_tickets"] == 2
     assert payload["open_tickets"] == 1
+    assert payload["in_progress_tickets"] == 0
     assert payload["status_breakdown"][0]["_id"] == "open"
+
+
+def test_incident_lifecycle_requires_login(monkeypatch):
+    collection = FakeTicketCollection()
+    monkeypatch.setattr("app.main.get_collection", lambda name: collection)
+
+    assert client.post("/incidents", json={"title": "Cannot access event report"}).status_code == 401
+
+    token = client.post(
+        "/login",
+        json={"username": "admin", "password": "admin123"},
+    ).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = client.post(
+        "/incidents",
+        headers=headers,
+        json={
+            "title": "Cannot access event report",
+            "category": "reporting",
+            "priority": "high",
+            "description": "The event report returns an error after sign-in.",
+            "owner": "support-team",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["status"] == "open"
+
+    ticket_id = created.json()["id"]
+    in_progress = client.patch(
+        f"/incidents/{ticket_id}",
+        headers=headers,
+        json={"status": "in-progress"},
+    )
+    assert in_progress.status_code == 200
+    assert in_progress.json()["status"] == "in-progress"
+    summary = client.get("/reports/summary", headers=headers).json()
+    assert summary["in_progress_tickets"] == 1
+
+    resolved = client.patch(
+        f"/incidents/{ticket_id}",
+        headers=headers,
+        json={"status": "resolved"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "resolved"
+    summary = client.get("/reports/summary", headers=headers).json()
+    assert summary["resolved_tickets"] == 1
+    assert summary["in_progress_tickets"] == 0

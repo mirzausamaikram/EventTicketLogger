@@ -4,9 +4,10 @@ import hmac
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -129,12 +130,16 @@ class TicketCreate(BaseModel):
 
 class IncidentCreate(BaseModel):
     title: str = Field(..., min_length=1)
-    status: str = "open"
+    status: Literal["open", "in-progress", "resolved"] = "open"
     priority: str = "medium"
     category: str = "general"
     description: str | None = None
     owner: str | None = None
     created_at: str | None = None
+
+
+class IncidentStatusUpdate(BaseModel):
+    status: Literal["open", "in-progress", "resolved"]
 
 
 class CheckinPayload(BaseModel):
@@ -273,9 +278,20 @@ def dashboard():
                         button { padding: 10px 14px; border-radius: 10px; border: none; cursor: pointer; }
                         .primary { background: #2563eb; color: white; }
                         .secondary { background: #e2e8f0; color: #0f172a; }
+                        input, textarea, select { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+                        .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+                        .form-grid label { display: grid; gap: 6px; font-weight: 600; }
+                        .wide { grid-column: 1 / -1; }
+                        .ticket-title { font-weight: 700; }
+                        .ticket-description { margin-top: 5px; max-width: 420px; color: #64748b; white-space: pre-wrap; }
+                        .status-control { display: flex; min-width: 210px; gap: 8px; align-items: center; }
+                        .status-control select { min-width: 125px; }
+                        .status-control button { background: #0f766e; color: white; }
+                        .notice { min-height: 20px; margin: 0 0 12px; color: #0f766e; }
                         table { width: 100%; border-collapse: collapse; margin-top: 12px; }
                         th, td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; }
                         .empty { color: #64748b; font-style: italic; }
+                        @media (max-width: 640px) { body { padding: 12px; } .form-grid { grid-template-columns: 1fr; } .wide { grid-column: auto; } .topbar { gap: 12px; } }
                     </style>
                 </head>
                 <body>
@@ -291,13 +307,35 @@ def dashboard():
                         <div id="dashboardContent">
                             <div id="metrics" class="row"></div>
                             <div class="panel">
+                                <h2>Raise a ticket</h2>
+                                <div id="ticketMessage" class="notice" role="status"></div>
+                                <form id="ticketForm" onsubmit="createIncident(event)">
+                                    <div class="form-grid">
+                                        <label>Issue title<input name="title" required maxlength="160" placeholder="What went wrong?"></label>
+                                        <label>Category<input name="category" required maxlength="80" placeholder="For example, access or billing"></label>
+                                        <label>Priority
+                                            <select name="priority">
+                                                <option value="low">Low</option>
+                                                <option value="medium" selected>Medium</option>
+                                                <option value="high">High</option>
+                                            </select>
+                                        </label>
+                                        <label>Owner<input name="owner" maxlength="80" placeholder="Team or person"></label>
+                                        <label class="wide">Description<textarea name="description" rows="3" placeholder="Add details that will help investigate and resolve this ticket"></textarea></label>
+                                    </div>
+                                    <button class="primary" type="submit">Create ticket</button>
+                                </form>
+                            </div>
+                            <div class="panel">
                                 <h2>Recent tickets</h2>
-                                <table>
-                                    <thead>
-                                        <tr><th>Title</th><th>Status</th><th>Priority</th><th>Category</th></tr>
-                                    </thead>
-                                    <tbody id="ticketTable"></tbody>
-                                </table>
+                                <div style="overflow-x:auto;">
+                                    <table>
+                                        <thead>
+                                            <tr><th>Ticket</th><th>Category</th><th>Priority</th><th>Owner</th><th>Status</th></tr>
+                                        </thead>
+                                        <tbody id="ticketTable"></tbody>
+                                    </table>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -322,18 +360,86 @@ def dashboard():
                             document.getElementById('metrics').innerHTML = `
                                 <div class="card"><h3>Total</h3><h2>${data.total_tickets}</h2></div>
                                 <div class="card"><h3>Open</h3><h2>${data.open_tickets}</h2></div>
+                                <div class="card"><h3>In progress</h3><h2>${data.in_progress_tickets}</h2></div>
                                 <div class="card"><h3>Resolved</h3><h2>${data.resolved_tickets}</h2></div>
                                 <div class="card"><h3>Escalated</h3><h2>${data.escalated_tickets}</h2></div>
                             `;
 
                             if ((data.ticket_rows || []).length === 0) {
-                                document.getElementById('ticketTable').innerHTML = '<tr><td colspan="4" class="empty">No tickets yet.</td></tr>';
+                                document.getElementById('ticketTable').innerHTML = '<tr><td colspan="5" class="empty">No tickets yet.</td></tr>';
                                 return;
                             }
 
-                            document.getElementById('ticketTable').innerHTML = (data.ticket_rows || []).map(ticket => `
-                                <tr><td>${ticket.title || 'Untitled ticket'}</td><td>${ticket.status}</td><td>${ticket.priority}</td><td>${ticket.category}</td></tr>
-                            `).join('');
+                            const statuses = ['open', 'in-progress', 'resolved'];
+                            document.getElementById('ticketTable').innerHTML = data.ticket_rows.map(ticket => {
+                                const ticketId = escapeHtml(ticket.id);
+                                const status = statuses.includes(ticket.status) ? ticket.status : 'open';
+                                const statusOptions = statuses.map(option => `
+                                    <option value="${option}" ${status === option ? 'selected' : ''}>${option.replace('-', ' ')}</option>
+                                `).join('');
+                                return `
+                                    <tr>
+                                        <td><div class="ticket-title">${escapeHtml(ticket.title || 'Untitled ticket')}</div><div class="ticket-description">${escapeHtml(ticket.description || '')}</div></td>
+                                        <td>${escapeHtml(ticket.category)}</td>
+                                        <td>${escapeHtml(ticket.priority)}</td>
+                                        <td>${escapeHtml(ticket.owner || 'Unassigned')}</td>
+                                        <td><div class="status-control"><select id="status-${ticketId}" aria-label="Status for ${ticketId}">${statusOptions}</select><button type="button" onclick="saveStatus('${ticketId}')">Save</button></div></td>
+                                    </tr>
+                                `;
+                            }).join('');
+                        }
+
+                        function escapeHtml(value) {
+                            return String(value ?? '').replace(/[&<>"']/g, character => ({
+                                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+                            })[character]);
+                        }
+
+                        function showTicketMessage(message, isError = false) {
+                            const element = document.getElementById('ticketMessage');
+                            element.textContent = message;
+                            element.style.color = isError ? '#b91c1c' : '#0f766e';
+                        }
+
+                        async function createIncident(event) {
+                            event.preventDefault();
+                            const form = event.currentTarget;
+                            const values = Object.fromEntries(new FormData(form).entries());
+                            const response = await fetch('/incidents', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                                body: JSON.stringify({
+                                    title: values.title,
+                                    category: values.category,
+                                    priority: values.priority,
+                                    owner: values.owner || null,
+                                    description: values.description || null
+                                })
+                            });
+                            const data = await response.json();
+                            if (!response.ok) {
+                                showTicketMessage(data.detail || 'Could not create ticket.', true);
+                                return;
+                            }
+                            form.reset();
+                            showTicketMessage('Ticket created. Assign an owner and update its status as work progresses.');
+                            await loadSummary();
+                        }
+
+                        async function saveStatus(ticketId) {
+                            const status = document.getElementById('status-' + ticketId).value;
+                            const response = await fetch('/incidents/' + ticketId, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                                body: JSON.stringify({ status })
+                            });
+                            const data = await response.json();
+                            if (!response.ok) {
+                                showTicketMessage(data.detail || 'Could not update ticket status.', true);
+                                return;
+                            }
+                            showTicketMessage('Ticket status updated to ' + data.status.replace('-', ' ') + '.');
+                            await loadSummary();
                         }
 
                         function logoutUser() {
@@ -388,13 +494,13 @@ def update_event(event_id: str, payload: EventUpdate):
 
 
 @app.get("/incidents")
-def list_incidents():
+def list_incidents(user: dict[str, Any] = Depends(require_auth)):
     docs = list(get_collection("tickets").find({}))
     return [serialize_mongo_doc(doc) for doc in docs]
 
 
 @app.post("/incidents", status_code=201)
-def create_incident(payload: IncidentCreate):
+def create_incident(payload: IncidentCreate, user: dict[str, Any] = Depends(require_auth)):
     incident = {
         "title": payload.title,
         "status": payload.status,
@@ -407,6 +513,29 @@ def create_incident(payload: IncidentCreate):
     result = get_collection("tickets").insert_one(incident)
     created = get_collection("tickets").find_one({"_id": result.inserted_id})
     return serialize_mongo_doc(created)
+
+
+@app.patch("/incidents/{incident_id}")
+def update_incident_status(
+    incident_id: str,
+    payload: IncidentStatusUpdate,
+    user: dict[str, Any] = Depends(require_auth),
+):
+    try:
+        object_id = ObjectId(incident_id)
+    except InvalidId as exc:
+        raise HTTPException(status_code=400, detail="Invalid ticket ID") from exc
+
+    collection = get_collection("tickets")
+    if not collection.find_one({"_id": object_id}):
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    collection.update_one(
+        {"_id": object_id},
+        {"$set": {"status": payload.status, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    updated = collection.find_one({"_id": object_id})
+    return serialize_mongo_doc(updated)
 
 
 @app.get("/tickets")
@@ -470,6 +599,7 @@ def ticket_summary(user: dict[str, Any] = Depends(require_auth)):
     tickets = list(collection.find({}))
     total_tickets = len(tickets)
     open_tickets = sum(1 for doc in tickets if str(doc.get("status", "")).lower() in {"open", "new", "active"})
+    in_progress_tickets = sum(1 for doc in tickets if str(doc.get("status", "")).lower() == "in-progress")
     resolved_tickets = sum(1 for doc in tickets if str(doc.get("status", "")).lower() == "resolved")
     escalated_tickets = sum(1 for doc in tickets if str(doc.get("priority", "")).lower() == "high")
 
@@ -481,6 +611,7 @@ def ticket_summary(user: dict[str, Any] = Depends(require_auth)):
         "user": user.get("sub"),
         "total_tickets": total_tickets,
         "open_tickets": open_tickets,
+        "in_progress_tickets": in_progress_tickets,
         "resolved_tickets": resolved_tickets,
         "escalated_tickets": escalated_tickets,
         "status_breakdown": status_breakdown,
@@ -488,10 +619,13 @@ def ticket_summary(user: dict[str, Any] = Depends(require_auth)):
         "category_breakdown": category_breakdown,
         "ticket_rows": [
             {
+                "id": str(doc.get("_id", "")),
                 "title": doc.get("title") or doc.get("customer_name") or "Untitled ticket",
                 "status": doc.get("status", "open"),
                 "priority": doc.get("priority", "medium"),
                 "category": doc.get("category") or doc.get("ticket_type") or "general",
+                "owner": doc.get("owner"),
+                "description": doc.get("description"),
             }
             for doc in tickets[:10]
         ],
