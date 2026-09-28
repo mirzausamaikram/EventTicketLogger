@@ -1,35 +1,112 @@
 # Event Ticket Logger
 
-A small FastAPI application for tracking events, ticket sales, ticket scans, and backup records in MongoDB.
+A MongoDB-backed incident and ticket tracking API for support operations, service analytics, and live ticket metrics. The project combines event management, ticket handling, dashboard reporting, and authentication in one lightweight application.
 
-## Features
+## Highlights
 
-- Event management
-- Ticket inventory and sales tracking
-- Check-in / scan logging
-- Search and backup-friendly JSON API
-- MongoDB-backed persistence
+- Secure admin login with bearer-token auth
+- Ticket and incident collection APIs
+- MongoDB aggregation-based reporting for support metrics
+- CSV/JSON exports for downstream reporting and backups
+- Simple dashboard UI for live support health monitoring
+- Docker Compose setup for local MongoDB development
 
-## Run locally
+## Tech stack
 
-1. Start MongoDB locally.
-2. Copy `.env.example` to `.env` and adjust values.
-3. Install dependencies:
+- Python 3.13+
+- FastAPI
+- MongoDB
+- Pydantic validation
+- Pytest
+
+## Local setup
+
+1. Clone the repository.
+2. Copy `.env.example` to `.env` and update your local values.
+3. Start MongoDB:
+   `docker compose up -d`
+4. Install dependencies:
    `python -m pip install -r requirements.txt`
-4. Run:
-   `uvicorn app.main:app --reload`
+5. Run the API:
+   `python -m uvicorn app.main:app --reload`
 
-## API
+The app will run on `http://127.0.0.1:8000`.
+
+## Default credentials
+
+- Username: `admin`
+- Password: `admin123`
+
+> Change these values in your `.env` file before using the project in a real environment.
+
+## Dashboard
+
+Open the dashboard in your browser:
+
+`http://127.0.0.1:8000/dashboard`
+
+It includes:
+
+- login panel
+- open/resolved/escalated summary cards
+- recent ticket table
+- support analytics overview
+
+## API overview
+
+### Auth
+
+- `POST /login`
+  - Body: `{ "username": "admin", "password": "admin123" }`
+  - Returns a bearer token
+
+### Support and ticket endpoints
 
 - `GET /health`
-- `GET /events`
-- `POST /events`
-- `GET /events/{event_id}`
+- `GET /incidents`
+- `POST /incidents`
 - `GET /tickets`
 - `POST /tickets`
 - `GET /tickets/{ticket_id}`
 - `POST /tickets/{ticket_id}/checkin`
+- `GET /events`
+- `POST /events`
+- `GET /events/{event_id}`
 
-## Notes
+### Reporting and export
 
-This is meant as a clean starter project for a weekend build and can be expanded with authentication, dashboards, or export features.
+- `GET /reports/summary`
+  - Requires `Authorization: Bearer <token>`
+  - Returns total, open, resolved, and escalated ticket counts
+  - Includes status, priority, and category aggregation data
+- `GET /reports/export?format=json`
+- `GET /reports/export?format=csv`
+
+## Example reporting payload
+
+```json
+{
+  "total_tickets": 42,
+  "open_tickets": 17,
+  "resolved_tickets": 21,
+  "escalated_tickets": 6,
+  "status_breakdown": [
+    { "_id": "open", "count": 17 },
+    { "_id": "resolved", "count": 21 }
+  ]
+}
+```
+
+## Development notes
+
+This project is intentionally lightweight so it can be built quickly for a weekend demo or proof-of-concept. It is structured to be extended with:
+
+- RBAC and user accounts
+- MongoDB indexing
+- integration with email or Slack alerts
+- report charts and PDF exports
+- production-grade deployment with Docker or Azure
+
+## License
+
+This project is provided as a starter application for internal demos and learning. Update the license if you plan to publish or distribute it publicly.
